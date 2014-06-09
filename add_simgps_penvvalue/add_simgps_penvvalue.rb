@@ -94,15 +94,92 @@ rescue ArgumentError
 	false
 end
 
+###################################################################
+#Function		:makePenvHash
+#Description	:penv_var.hの環境変数と値のHashをreturnする
+###################################################################
+def makePenvHash(filename, type)
+	
+	hash = Hash.new()
+	
+	if type == "variable"
+		search_key = "GPS_PENV_VAR_ID"
+	elsif type == "value"
+		search_key = "GPS_PENV_VAL_INT_"
+	else
+		p "makePenvHash is wrong."
+		exit
+	end
+	
+	f = open(filename)
+	f.each_line {|line|
+		if /#{search_key}/ =~ line
+			(dummy, variable, tmp_value) = line.split(/\s+/)
+			if integer_string?(tmp_value)
+				value = tmp_value
+			else
+				/(\()(.+)(\))/ =~ tmp_value
+				if !$2.nil? then
+					value = $2
+				else
+					value = tmp_value
+				end
+			end
+			hash.store(variable, value)
+		end
+	}
+	f.close()
+	return hash
+end
+
+###################################################################
+#Function		:makePenvHash
+#Description	:penv_var.hのdefineから、値を抜き出してreturnする
+#				:値がマクロである場合、数値の値となるように解決する
+###################################################################
+def getPenvHashValue(hash, variable)
+	
+	while !variable.nil?
+		value = hash[variable]
+		if value.nil?
+			break
+		elsif integer_string?(value)
+			return value
+		else
+			variable = value
+		end
+	end
+	
+	# penv_var.h以外に定義があるので諦める
+	return "-99999999"
+end
+
+###################################################################
+#Function		:makeIdentifierHash
+#Description	:.identifierの環境変数と値のHashをreturnする
+###################################################################
+def makeIdentifierHash(filename)
+	
+	hash = Hash.new()
+
+	f = open(filename)
+	f.each_line {|line|
+		(variable, value) = line.split(/\s+/)
+		hash.store(variable, value)
+	}
+	f.close()
+	return hash
+end
+
 # オプション解析
 opt = OptionParser.new
 OPTS ={}
 opt.on('--machine VAL', 'machine/dest') {|v| OPTS[:machine] = v}
 opt.on('--keyword VAL', 'Add environment variable including the keyword') {|v| OPTS[:keyword] = v}
-opt.on('--inidentifier VAL', 'Original .identifier file') {|v| OPTS[:inidentifier] = v}
-opt.on('--invariable VAL', 'Original .variable file') {|v| OPTS[:invariable] = v}
-opt.on('--outidentifier VAL', 'Output .identifier file') {|v| OPTS[:outidentifier] = v}
-opt.on('--outvariable VAL', 'Output .variable file') {|v| OPTS[:outvariable] = v}
+opt.on('--inidentifier VAL', 'Original .identifier file(default .identifier)') {|v| OPTS[:inidentifier] = v}
+opt.on('--invariable VAL', 'Original .variable file(default .variable)') {|v| OPTS[:invariable] = v}
+opt.on('--outidentifier VAL', 'Output .identifier file(default .identifier.machinename)') {|v| OPTS[:outidentifier] = v}
+opt.on('--outvariable VAL', 'Output .variable file(default .variable.machinename)') {|v| OPTS[:outvariable] = v}
 opt.parse!(ARGV)
 
 #penvvar_filepath = "/proj/lpux/products/" + OPTS[:machine] + "/base/gw_printer/p_gpslib/include/gps/penv_var.h"
@@ -120,14 +197,16 @@ else
 	in_variable = OPTS[:invariable]
 end
 
+(machine, dest) = OPTS[:machine].split(/\//)
+machine.downcase!
 if OPTS[:outidentifier].nil?
-	out_identifier = "./.identifier.all"
+	out_identifier = "./.identifier." + machine + "_" + dest
 else
 	out_identifier = OPTS[:outidentifier]
 end
 
 if OPTS[:outvariable].nil?
-	out_variable = "./.variable.all"
+	out_variable = "./.variable." + machine + "_" + dest
 else
 	out_variable = OPTS[:outvariable]
 end
@@ -142,53 +221,41 @@ FileUtils.cp(in_variable, out_variable)
 newidentifier = File.open(out_identifier, "a")
 newvariable = File.open(out_variable, "a")
 
-# .identifierに対する処理
-all_variables = getGrepStrings(penvvar_filepath, "GPS_PENV_VAR_ID")
-all_variables.each { |str|
-	
-	var_variable = getGpsPenvVariable(str)
+# penv_var.hと.identifierからハッシュを作成
+penvvar_hash = makePenvHash(penvvar_filepath, "variable")
+penvval_hash = makePenvHash(penvvar_filepath, "value")
+identifier_hash = makeIdentifierHash(in_identifier)
+
+penvvar_hash.each_key { |var_variable|
 	
 	# keywordに当てはまらない環境変数は飛ばす
 	if !OPTS[:keyword].nil? && /#{OPTS[:keyword]}/ !~ var_variable
 		next
 	end
-	
-	search_result = getGrepStrings(in_identifier, var_variable+"\t")
-	# .identifierにVARの定義がない場合、.identifierと.variableにVARとVALを追加する。
-	if search_result.size == 0
-	
-		var_value = getGpsPenvValue(penvvar_filepath, str)
-		
-		# .identifierにVARを追加	
-		p var_variable
-		newidentifier.write(var_variable + "\t" + var_value + "\n")			
-		
-		val_variables = Array.new
-		val_values = Array.new
-		/(GPS_PENV_VAR_ID_)(.+)/ =~ var_variable
-		all_values = getGrepStrings(penvvar_filepath, "GPS_PENV_VAL_INT_"+$2+"_")
 
-		if all_values.size == 0
+	# .identifierに無い環境変数の定義を追加する。
+	if !identifier_hash.key?(var_variable)
+		newidentifier.write(var_variable + "\t" + getPenvHashValue(penvvar_hash, var_variable) + "\n")
+		
+		/(GPS_PENV_VAR_ID_)(.+)/ =~ var_variable
+		select_key = $2 + "_"
+		tmpval_hash = penvval_hash.select{|k| k =~ /#{select_key}/}
+		if tmpval_hash.empty?
 			# .identifierへのVAL追加なし
 			# .variableへの追加（タイプはINT）
-			newvariable.write(var_variable + "\t" + "INT" + "\t" + "0" + "\n")			
+			newvariable.write(var_variable + "\t" + "INT" + "\t" + "0" + "\n")
 		else
-			all_values.each { |str|
-				val_variables.push(getGpsPenvVariable(str))
-				val_values.push(getGpsPenvValue(penvvar_filepath, str))
-			}
 			# .identifierにVALを追加
-			for i in 0..val_variables.size-1
-				p val_variables[i] + "\t" + val_values[i] + "\n"
-				newidentifier.write(val_variables[i] + "\t" + val_values[i] + "\n")
-			end
+			tmpval_hash.each_key { |val_variable|
+				newidentifier.write(val_variable+ "\t" + getPenvHashValue(penvval_hash, val_variable) + "\n")
+			}
 			newidentifier.write("\n")
-				
-			# .variableに追加（タイプはID）
-			newvariable.write(var_variable + "\t" + "ID" + "\t" + val_variables.size.to_s)
-			for i in 0..val_variables.size-1
-				newvariable.write("\t" + val_variables[i])
-			end
+			
+			# .variableにVALを追加
+			newvariable.write(var_variable + "\t" + "ID" + "\t" + tmpval_hash.size.to_s)
+			tmpval_hash.each_key { |val_variable|
+				newvariable.write("\t" + val_variable)
+			}
 			newvariable.write("\n\n")
 		end
 	end
