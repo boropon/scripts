@@ -113,8 +113,9 @@ def makePenvHash(filename, type)
 	
 	f = open(filename)
 	f.each_line {|line|
-		if /#{search_key}/ =~ line
-			(dummy, variable, tmp_value) = line.split(/\s+/)
+		euc_line = NKF.nkf("-e", line)
+		if /#{search_key}/ =~ euc_line
+			(dummy, variable, tmp_value) = euc_line.split(/\s+/)
 			if integer_string?(tmp_value)
 				value = tmp_value
 			else
@@ -137,10 +138,10 @@ end
 #Description	:penv_var.hのdefineから、値を抜き出してreturnする
 #				:値がマクロである場合、数値の値となるように解決する
 ###################################################################
-def getPenvHashValue(hash, variable)
+def getPenvHashValue(penvhash, paperhash, variable)
 	
 	while !variable.nil?
-		value = hash[variable]
+		value = penvhash[variable]
 		if value.nil?
 			break
 		elsif integer_string?(value)
@@ -150,6 +151,11 @@ def getPenvHashValue(hash, variable)
 		end
 	end
 	
+	# paperdef.hに定義があればvalueをreturn
+	if !paperhash[variable].nil?
+		return paperhash[variable]
+	end
+
 	# penv_var.h以外に定義があるので諦める
 	return "-99999999"
 end
@@ -171,6 +177,55 @@ def makeIdentifierHash(filename)
 	return hash
 end
 
+###################################################################
+#Function		:makePaperdefHash
+#Description	:.identifierの環境変数と値のHashをreturnする
+###################################################################
+def makePaperdefHash(filename)
+
+	hash = Hash.new()
+
+	is_enum = false
+	is_define = false
+	paper_code = 0
+	f = open(filename)
+	f.each_line {|line|
+		euc_line = NKF.nkf("-e", line)
+		if /#{"enum\tgps_p_sz"}/ =~ euc_line
+			is_enum = true
+		elsif /#{"};"}/ =~ euc_line
+			is_enum = false
+		elsif /^#define.+/ =~ euc_line
+			is_define = true
+		end
+
+		if is_enum == true
+			paper_codes = euc_line.scan(/GPS_CODE_(?:[A-Z]|[0-9]|[a-z]|_|x| |=)+/)
+			paper_codes.each {|x|
+				if x =~ /(GPS_CODE_(?:[A-Z]|[0-9]|[a-z]|_|x|)+) = ([0-9]+)/
+					x = $1
+					paper_code = $2.to_i
+				end
+				hash.store(x, paper_code.to_s)
+				paper_code += 1
+			}
+		elsif is_define == true
+			(dummy, variable, value) = euc_line.split(/\s+/)
+			
+			if !value.nil? && integer_string?(value)
+				hash.store(variable, value)
+			elsif !value.nil? && !hash[value].nil? && integer_string?(hash[value])
+				hash.store(variable, hash[value])
+			else
+				#このケースはハッシュに追加しなくていいはず
+			end
+			is_define = false
+		end
+	}
+	f.close()
+	return hash
+end
+
 # オプション解析
 opt = OptionParser.new
 OPTS ={}
@@ -180,10 +235,12 @@ opt.on('--inidentifier VAL', 'Original .identifier file(default .identifier)') {
 opt.on('--invariable VAL', 'Original .variable file(default .variable)') {|v| OPTS[:invariable] = v}
 opt.on('--outidentifier VAL', 'Output .identifier file(default .identifier.machinename)') {|v| OPTS[:outidentifier] = v}
 opt.on('--outvariable VAL', 'Output .variable file(default .variable.machinename)') {|v| OPTS[:outvariable] = v}
+opt.on('--progress', 'Display progress') {|v| OPTS[:progress] = v}
 opt.parse!(ARGV)
 
-#penvvar_filepath = "/proj/lpux/products/" + OPTS[:machine] + "/base/gw_printer/p_gpslib/include/gps/penv_var.h"
-penvvar_filepath = "./penv_var.h"
+penvvar_filepath = "/proj/lpux/products/" + OPTS[:machine] + "/base/gw_printer/p_gpslib/include/gps/penv_var.h"
+#penvvar_filepath = "./penv_var.h"
+paperdef_filepath = "/proj/lpux/products/" + OPTS[:machine] + "/base/gw_printer/p_gpslib/include/gps/paperdef.h"
 
 if OPTS[:inidentifier].nil?
 	in_identifier = "./.identifier"
@@ -211,23 +268,41 @@ else
 	out_variable = OPTS[:outvariable]
 end
 
-# 書き込み用.identifier, .variableの作成
-newidentifier_filepath = "./.identifier.all"
-newvariable_filepath = "./.variable.all"
-
 FileUtils.cp(in_identifier, out_identifier)
 FileUtils.cp(in_variable, out_variable)
 
 newidentifier = File.open(out_identifier, "a")
 newvariable = File.open(out_variable, "a")
 
-# penv_var.hと.identifierからハッシュを作成
+# penv_var.hと.identifierとpaperdef.hからハッシュを作成
 penvvar_hash = makePenvHash(penvvar_filepath, "variable")
 penvval_hash = makePenvHash(penvvar_filepath, "value")
 identifier_hash = makeIdentifierHash(in_identifier)
+paperdef_hash = makePaperdefHash(paperdef_filepath)
 
+if OPTS[:progress] == true
+	eighty_percent = (penvvar_hash.size * 0.8).round
+	sixty_percent = (penvvar_hash.size * 0.6).round
+	forty_percent = (penvvar_hash.size * 0.4).round
+	twenty_percent = (penvvar_hash.size * 0.2).round
+end
+roop_count = 0
 penvvar_hash.each_key { |var_variable|
 	
+	if OPTS[:progress] == true
+		if roop_count == eighty_percent
+			p "80% finished!"
+		elsif roop_count == sixty_percent
+			p "60% finished!"
+		elsif roop_count == forty_percent
+			p "40% finished!"
+		elsif roop_count == twenty_percent
+			p "20% finished!"
+		elsif roop_count == 0
+			p "Make hash finished!"
+		end
+	end
+
 	# keywordに当てはまらない環境変数は飛ばす
 	if !OPTS[:keyword].nil? && /#{OPTS[:keyword]}/ !~ var_variable
 		next
@@ -235,7 +310,7 @@ penvvar_hash.each_key { |var_variable|
 
 	# .identifierに無い環境変数の定義を追加する。
 	if !identifier_hash.key?(var_variable)
-		newidentifier.write(var_variable + "\t" + getPenvHashValue(penvvar_hash, var_variable) + "\n")
+		newidentifier.write(var_variable + "\t" + getPenvHashValue(penvvar_hash, paperdef_hash, var_variable) + "\n")
 		
 		/(GPS_PENV_VAR_ID_)(.+)/ =~ var_variable
 		select_key = $2 + "_"
@@ -247,7 +322,7 @@ penvvar_hash.each_key { |var_variable|
 		else
 			# .identifierにVALを追加
 			tmpval_hash.each_key { |val_variable|
-				newidentifier.write(val_variable+ "\t" + getPenvHashValue(penvval_hash, val_variable) + "\n")
+				newidentifier.write(val_variable + "\t" + getPenvHashValue(penvval_hash, paperdef_hash, val_variable) + "\n")
 			}
 			newidentifier.write("\n")
 			
@@ -259,6 +334,8 @@ penvvar_hash.each_key { |var_variable|
 			newvariable.write("\n\n")
 		end
 	end
+
+	roop_count += 1
 }
 
 newidentifier.close()
