@@ -126,7 +126,7 @@ def makePenvHash(filename, type)
 					value = tmp_value
 				end
 			end
-			hash.store(variable, value)
+			hash.store(variable.to_sym, value)
 		end
 	}
 	f.close()
@@ -147,7 +147,7 @@ def getPenvHashValue(penvhash, paperhash, variable)
 		elsif integer_string?(value)
 			return value
 		else
-			variable = value
+			variable = value.to_sym
 		end
 	end
 	
@@ -171,7 +171,9 @@ def makeIdentifierHash(filename)
 	f = open(filename)
 	f.each_line {|line|
 		(variable, value) = line.split(/\s+/)
-		hash.store(variable, value)
+		if !value.nil?
+			hash.store(variable.to_sym, value)
+		end
 	}
 	f.close()
 	return hash
@@ -206,16 +208,16 @@ def makePaperdefHash(filename)
 					x = $1
 					paper_code = $2.to_i
 				end
-				hash.store(x, paper_code.to_s)
+				hash.store(x.to_sym, paper_code.to_s)
 				paper_code += 1
 			}
 		elsif is_define == true
 			(dummy, variable, value) = euc_line.split(/\s+/)
 			
 			if !value.nil? && integer_string?(value)
-				hash.store(variable, value)
-			elsif !value.nil? && !hash[value].nil? && integer_string?(hash[value])
-				hash.store(variable, hash[value])
+				hash.store(variable.to_sym, value)
+			elsif !value.nil? && !hash[value.to_sym].nil? && integer_string?(hash[value.to_sym])
+				hash.store(variable.to_sym, hash[value.to_sym])
 			else
 				#このケースはハッシュに追加しなくていいはず
 			end
@@ -224,6 +226,19 @@ def makePaperdefHash(filename)
 	}
 	f.close()
 	return hash
+end
+
+###################################################################
+#Function		:writeHashToFile
+#Description	:ハッシュテーブルの値をファイル出力する
+###################################################################
+def writeHashToFile(hashtable, filename)
+	
+	outputfile = File.open(filename, "w")
+	hashtable.each { |key, value|
+		outputfile.write("#{key}, #{value}\n")
+	}
+	outputfile.close()
 end
 
 # オプション解析
@@ -236,11 +251,14 @@ opt.on('--invariable VAL', 'Original .variable file(default .variable)') {|v| OP
 opt.on('--outidentifier VAL', 'Output .identifier file(default .identifier.machinename)') {|v| OPTS[:outidentifier] = v}
 opt.on('--outvariable VAL', 'Output .variable file(default .variable.machinename)') {|v| OPTS[:outvariable] = v}
 opt.on('--progress', 'Display progress') {|v| OPTS[:progress] = v}
+opt.on('--benchmark', 'Display processing time') {|v| OPTS[:benchmark] = v}
+opt.on('--hashtofile', 'Output hash to file(for debug)') {|v| OPTS[:hashtofile] = v}
 opt.parse!(ARGV)
 
 penvvar_filepath = "/proj/lpux/products/" + OPTS[:machine] + "/base/gw_printer/p_gpslib/include/gps/penv_var.h"
 #penvvar_filepath = "./penv_var.h"
 paperdef_filepath = "/proj/lpux/products/" + OPTS[:machine] + "/base/gw_printer/p_gpslib/include/gps/paperdef.h"
+#paperdef_filepath = "./penv_var.h"
 
 if OPTS[:inidentifier].nil?
 	in_identifier = "./.identifier"
@@ -268,6 +286,9 @@ else
 	out_variable = OPTS[:outvariable]
 end
 
+# 処理時間の計測
+start_time = Time.now
+
 FileUtils.cp(in_identifier, out_identifier)
 FileUtils.cp(in_variable, out_variable)
 
@@ -280,12 +301,21 @@ penvval_hash = makePenvHash(penvvar_filepath, "value")
 identifier_hash = makeIdentifierHash(in_identifier)
 paperdef_hash = makePaperdefHash(paperdef_filepath)
 
+# 
+if OPTS[:hashtofile] == true
+	writeHashToFile(penvvar_hash, "penvvar_hash_#{machine}_#{dest}.txt")
+	writeHashToFile(penvval_hash, "penvval_hash_#{machine}_#{dest}.txt")
+	writeHashToFile(identifier_hash, "identifier_hash_#{machine}_#{dest}.txt")
+	writeHashToFile(paperdef_hash, "paperdef_hash_#{machine}_#{dest}.txt")
+end
+
 if OPTS[:progress] == true
 	eighty_percent = (penvvar_hash.size * 0.8).round
 	sixty_percent = (penvvar_hash.size * 0.6).round
 	forty_percent = (penvvar_hash.size * 0.4).round
 	twenty_percent = (penvvar_hash.size * 0.2).round
 end
+
 roop_count = 0
 penvvar_hash.each_key { |var_variable|
 	
@@ -310,7 +340,7 @@ penvvar_hash.each_key { |var_variable|
 
 	# .identifierに無い環境変数の定義を追加する。
 	if !identifier_hash.key?(var_variable)
-		newidentifier.write(var_variable + "\t" + getPenvHashValue(penvvar_hash, paperdef_hash, var_variable) + "\n")
+		newidentifier.write(var_variable.to_s + "\t" + getPenvHashValue(penvvar_hash, paperdef_hash, var_variable) + "\n")
 		
 		/(GPS_PENV_VAR_ID_)(.+)/ =~ var_variable
 		select_key = $2 + "_"
@@ -318,18 +348,18 @@ penvvar_hash.each_key { |var_variable|
 		if tmpval_hash.empty?
 			# .identifierへのVAL追加なし
 			# .variableへの追加（タイプはINT）
-			newvariable.write(var_variable + "\t" + "INT" + "\t" + "0" + "\n")
+			newvariable.write(var_variable.to_s + "\t" + "INT" + "\t" + "0" + "\n")
 		else
 			# .identifierにVALを追加
 			tmpval_hash.each_key { |val_variable|
-				newidentifier.write(val_variable + "\t" + getPenvHashValue(penvval_hash, paperdef_hash, val_variable) + "\n")
+				newidentifier.write(val_variable.to_s + "\t" + getPenvHashValue(penvval_hash, paperdef_hash, val_variable) + "\n")
 			}
 			newidentifier.write("\n")
 			
 			# .variableにVALを追加
-			newvariable.write(var_variable + "\t" + "ID" + "\t" + tmpval_hash.size.to_s)
+			newvariable.write(var_variable.to_s + "\t" + "ID" + "\t" + tmpval_hash.size.to_s)
 			tmpval_hash.each_key { |val_variable|
-				newvariable.write("\t" + val_variable)
+				newvariable.write("\t" + val_variable.to_s)
 			}
 			newvariable.write("\n\n")
 		end
@@ -340,3 +370,7 @@ penvvar_hash.each_key { |var_variable|
 
 newidentifier.close()
 newvariable.close()
+
+if OPTS[:benchmark] == true
+	p "processing time : #{Time.now - start_time}s"
+end
